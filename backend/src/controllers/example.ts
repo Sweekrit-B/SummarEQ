@@ -3,6 +3,19 @@ import createHttpError from "http-errors";
 import ExampleModel from "../models/example";
 import { timeStamp } from "console";
 import mongoose from "mongoose";
+import OpenAI from "openai";
+import * as dotenv from "dotenv";
+import axios from "axios";
+
+dotenv.config();
+
+if (!process.env.OPEN_API_KEY) {
+  throw new Error("OpenAI API key not found");
+}
+
+const openai = new OpenAI({
+  apiKey: process.env.OPEN_API_KEY,
+});
 
 export const getExample: RequestHandler = async (req, res) => {
   const { id } = req.params;
@@ -18,7 +31,16 @@ export const getExample: RequestHandler = async (req, res) => {
 };
 
 export const createExample: RequestHandler = async (req, res) => {
-  const { type, email, subject, timestamp } = req.body;
+  const { type, email, subject, timestamp, body, summary } = req.body;
+  const PORT = process.env.OPEN_API_KEY;
+
+  // const completion = await openai.chat.completions.create({
+  //   messages: [
+  //     { role: "user", content: `Summarize the following email: ${body}` },
+  //   ],
+  //   model: "gpt-4o-mini",
+  // });
+
   try {
     if (req.body.type === "verification") {
       res.send({ challenge: req.body.challenge });
@@ -35,9 +57,25 @@ export const createExample: RequestHandler = async (req, res) => {
       email: email,
       subject: subject,
       timestamp: timestamp,
+      body: body,
+      summary: summary,
+      // summary: completion.choices[0].message.content,
     });
 
     res.status(201).json(example);
+
+    if (!process.env.POST_URL) {
+      throw new Error("Post URL not found");
+    }
+
+    axios
+      .post(process.env.POST_URL, example)
+      .then((response) => {
+        console.log("Response:", response.data);
+      })
+      .catch((error) => {
+        console.error("Error:", error);
+      });
   } catch (error) {
     console.error("Error processing webhook: ", error);
     res.status(400).send("Bad request, webhook not received.");
