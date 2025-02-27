@@ -31,15 +31,17 @@ export const getExample: RequestHandler = async (req, res) => {
 };
 
 export const createExample: RequestHandler = async (req, res) => {
-  const { type, email, subject, timestamp, body, summary } = req.body;
   const PORT = process.env.OPEN_API_KEY;
 
-  // const completion = await openai.chat.completions.create({
-  //   messages: [
-  //     { role: "user", content: `Summarize the following email: ${body}` },
-  //   ],
-  //   model: "gpt-4o-mini",
-  // });
+  const completion = await openai.chat.completions.create({
+    messages: [
+      {
+        role: "user",
+        content: `Summarize the following email: ${req.body.message.body}`,
+      },
+    ],
+    model: "gpt-4o-mini",
+  });
 
   try {
     if (req.body.type === "verification") {
@@ -53,13 +55,13 @@ export const createExample: RequestHandler = async (req, res) => {
     }
 
     const example = await ExampleModel.create({
-      type: type,
-      email: email,
-      subject: subject,
-      timestamp: timestamp,
-      body: body,
-      summary: summary,
-      // summary: completion.choices[0].message.content,
+      first_name: req.body.first_name,
+      last_name: req.body.last_name,
+      email: req.body.email,
+      phone: req.body.phone,
+      message_type: req.body.message.type,
+      message_body: req.body.message.body,
+      summary: completion.choices[0].message.content,
     });
 
     res.status(201).json(example);

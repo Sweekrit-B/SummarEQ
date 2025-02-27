@@ -1,11 +1,12 @@
 import { InferSchemaType, Schema, model, Types } from "mongoose";
 
 const exampleSchema = new Schema({
-  type: { type: String, required: true },
-  email: { type: String, required: true },
-  subject: { type: String, required: true },
-  timestamp: { type: String, required: true },
-  body: { type: String, required: false },
+  first_name: { type: String, required: false },
+  last_name: { type: String, required: false },
+  email: { type: String, required: false },
+  phone: { type: String, required: false },
+  message_type: { type: String, required: false },
+  message_body: { type: String, required: false },
   summary: { type: String, required: false },
 });
 
