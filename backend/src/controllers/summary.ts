@@ -138,6 +138,24 @@ export const createSummary: RequestHandler = async (req, res) => {
 
   const startTime = Date.now();
 
+  const authObject = await OAuthToken.findOne({
+    locationId: req.body.locationId,
+  })
+    .sort({ createdAt: -1 })
+    .limit(1);
+
+  console.log("Auth object found");
+
+  if (!authObject) {
+    res.status(400).send("No auth object found");
+    console.log("No auth object found");
+    return;
+  }
+
+  const access_token = authObject.accessToken;
+  const location_id = authObject.locationId;
+  const contact_id = req.body.contactId;
+
   try {
     if (mongoose.connection.readyState !== 1) {
       throw new Error("MongoDB is not connected");
@@ -165,77 +183,196 @@ export const createSummary: RequestHandler = async (req, res) => {
 
     if (req.body.type == "InboundMessage") {
       console.log("Received message: ", JSON.stringify(req.body));
+      const conversationId = req.body.conversationId;
+      const contactId = req.body.contactId;
 
-      const completion = await openai.chat.completions.create({
-        messages: [
+      const contact = await SummaryModel.findOne({
+        contactId: contactId,
+      }).exec();
+
+      if (!contact) {
+        console.log("Contact not found: ", contactId);
+
+        const messagesUrl = `https://services.leadconnectorhq.com/conversations/${conversationId}/messages`;
+        const contactUrl = `https://services.leadconnectorhq.com/contacts/${contactId}`;
+        const headers = {
+          Authorization: "Bearer " + access_token,
+          Version: "2021-04-15",
+        };
+
+        const contact_data = await axios
+          .get(contactUrl, { headers: headers })
+          .then((response) => {
+            console.log("Received contact data: ", response.data);
+            return response.data;
+          })
+          .catch((error) => {
+            console.error("Error fetching contact data.");
+            throw error;
+          });
+
+        const message_data = await axios
+          .get(messagesUrl, { headers: headers })
+          .then((response) => {
+            console.log(
+              "Received conversation messages: ",
+              response.data.messages.messages
+            );
+            return response.data.messages.messages;
+          })
+          .catch((error) => {
+            console.error("Error fetching conversation messages.");
+            throw error;
+          });
+
+        let messageTypes: any[] = [];
+        let messages = [];
+        let timestamps = [];
+
+        for (
+          let i = message_data.length - 1;
+          i >= Math.max(0, message_data.length - 21);
+          i--
+        ) {
+          console.log(i);
+          const message = message_data[i];
+          console.log("Message: ", message);
+          try {
+            if (!messageTypes.includes(message.messageType)) {
+              messageTypes.push(message.messageType);
+            }
+            const body = message.body;
+            const timestamp = message.timestamp;
+            messages.push(body);
+            timestamps.push(timestamp);
+          } catch (error) {
+            console.error("Error fetching message body: ", error);
+            continue;
+          }
+        }
+
+        const messages_string = messages.join("; ");
+
+        const completion = await openai.chat.completions.create({
+          messages: [
+            {
+              role: "user",
+              content: `Summarize the following messages that are separated by a semicolon. Prioritize the first 5 messages to be part of the summary, and if there is additional context, please include it from the last 15.: ${messages_string}`,
+            },
+          ],
+          model: "gpt-4o-mini",
+        });
+
+        const contextDetermination = await openai.chat.completions.create({
+          messages: [
+            {
+              role: "user",
+              content: `Determine if there is any important context about the client from any of these messages. Examples include the client having children, or being away the next week, etc. Summarize all this information into one string, making sure not to dilute anything. ONLY return the summary. If there is no key information, return the EXACT STRING "None": ${messages_string}`,
+            },
+          ],
+          model: "gpt-4o-mini",
+        });
+
+        let summaryText = completion.choices[0].message.content;
+        let contextText = contextDetermination.choices[0].message.content;
+
+        if (contextText === "None") {
+          contextText = null;
+        }
+
+        const summary = await SummaryModel.create({
+          firstName: contact_data.contact.firstName,
+          lastName: contact_data.contact.lastName,
+          email: contact_data.contact.email,
+          phone: contact_data.contact.phone,
+          locationId: req.body.locationId,
+          contactId: req.body.contactId,
+          messageTypes: messageTypes,
+          messageBodies: messages,
+          timestamps: timestamps,
+          summary: summaryText,
+          clientContext: contextText,
+        });
+
+        console.log("Received summary: ", JSON.stringify(summary));
+        console.log(
+          "Contact data first name: ",
+          contact_data.contact.firstName
+        );
+
+        const axiosDuration = await sendPostRequest(
+          access_token,
+          summaryText + "\n\n" + contextText,
+          location_id,
+          contact_id
+        );
+      } else {
+        console.log("Contact found: ", contact);
+        const resolvedContact = contact;
+        let messageTypes = resolvedContact?.messageTypes || [];
+        let messageBodies = resolvedContact?.messageBodies || [];
+        let timestamps: any[] = resolvedContact?.timestamps || [];
+        let context = resolvedContact?.clientContext || null;
+
+        if (!messageTypes.includes(req.body.messageType)) {
+          messageTypes.push(req.body.messageType);
+        }
+
+        messageBodies.shift();
+        timestamps.shift();
+        messageBodies.push(req.body.body);
+        timestamps.push(req.body.timestamp);
+
+        const messagesString = messageBodies.join("; ");
+
+        const completion = await openai.chat.completions.create({
+          messages: [
+            {
+              role: "user",
+              content: `Summarize the following messages that are separated by a semicolon. Prioritize the first 5 messages to be part of the summary, and if there is additional context, please include it from the last 15: ${messagesString}`,
+            },
+          ],
+          model: "gpt-4o-mini",
+        });
+
+        const contextDetermination = await openai.chat.completions.create({
+          messages: [
+            {
+              role: "user",
+              content: `Determine if there is any important context about the client from any of the incoming message, signified by being before the set of double semicolons in your prompt ";; ". Examples include the client having children, or being away the next week, etc. If there is add it to the client context summary in the second part of your prompt (after the set of double semicolons). Return a new summary with the new information. ONLY return the summary. If there is no key information, return the EXACT STRING "None": ${req.body.body} ;; ${context}`,
+            },
+          ],
+          model: "gpt-4o-mini",
+        });
+
+        let summaryText = completion.choices[0].message.content;
+        let contextText = contextDetermination.choices[0].message.content;
+
+        if (contextText === "None") {
+          contextText = null;
+        }
+        console.log("Context text: ", contextText);
+
+        const update = await SummaryModel.findOneAndUpdate(
+          { contactId: contactId },
           {
-            role: "user",
-            content: `Summarize the following email: ${req.body.body}`,
-          },
-        ],
-        model: "gpt-4o-mini",
-      });
+            messageTypes: messageTypes,
+            messageBodies: messageBodies,
+            timestamps: timestamps,
+            summary: summaryText,
+            clientContext: contextText,
+          }
+        );
 
-      const summaryText = completion.choices[0].message.content;
+        const axiosDuration = await sendPostRequest(
+          access_token,
+          summaryText + "\n\n" + contextText,
+          location_id,
+          contact_id
+        );
 
-      const summary = await SummaryModel.create({
-        // first_name: req.body.first_name,
-        // last_name: req.body.last_name,
-        // email: req.body.email,
-        // phone: req.body.phone,
-        locationId: req.body.locationId,
-        contactId: req.body.contactId,
-        messageType: req.body.messageType,
-        messageId: req.body.messageId,
-        body: req.body.body,
-        timestamp: req.body.timestamp,
-        summary: summaryText,
-      });
-      console.log("Received summary: ", JSON.stringify(summary));
-      // res.status(201).json(summary);
-
-      if (!process.env.POST_URL_TEST) {
-        throw new Error("Post URL not found");
+        console.log("Updated summary: ", JSON.stringify(update));
       }
-
-      const authObject = await OAuthToken.findOne({
-        locationId: req.body.locationId,
-      })
-        .sort({ createdAt: -1 })
-        .limit(1);
-
-      console.log("Auth object found");
-
-      if (!authObject) {
-        res.status(400).send("No auth object found");
-        console.log("No auth object found");
-        return;
-      }
-
-      const access_token = authObject.accessToken;
-      const authorization_code = authObject.authorizationCode;
-      const locationId = authObject.locationId;
-      console.log("Location ID: ", locationId);
-      console.log("Created time: ", authObject.createdAt);
-      // console.log("Access token: ", access_token);
-      const axiosDuration = await sendPostRequest(
-        access_token,
-        summaryText ?? "",
-        locationId,
-        req.body.contactId
-      );
-
-      // const axiosTime = await rateLimitedPostRequest(
-      //   process.env.POST_URL_TEST,
-      //   summary
-      // );
-
-      // const totalTime = Date.now() - startTime;
-      res.status(200).json({
-        message: summary,
-        // axiosTime: axiosTime,
-        // totalTime: totalTime,
-      });
     }
   } catch (error) {
     console.error("Error processing webhook: ", error);

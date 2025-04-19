@@ -18,11 +18,12 @@ export const redirectAuth: RequestHandler = async (req, res) => {
 export const callbackAuth: RequestHandler = async (req, res) => {
   const code = req.query.code; // Get authorization code from query parameters
   if (!code) {
-    res.status(400).send("Authorization code not provided"); //Handle missing code
-    window.location.href = "/auth/redirect"; // Redirect to installation URL
+    console.log("Authorization code not provided"); //Handle missing code
+    res.redirect("/auth/redirect"); // Redirect to redirect page
     return;
   }
   try {
+    const code = req.query.code;
     const tokenRes = await axios.post(
       "https://services.leadconnectorhq.com/oauth/token",
       qs.stringify({
