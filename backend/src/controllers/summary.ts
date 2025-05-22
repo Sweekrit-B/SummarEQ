@@ -238,7 +238,7 @@ export const createSummary: RequestHandler = async (req, res) => {
 
   // Find the auth object
   console.log("Searching for auth object based on locationId...");
-  const authObject = await OAuthToken.findOne({
+  let authObject = await OAuthToken.findOne({
     locationId: req.body.locationId,
   })
     .sort({ createdAt: -1 })
@@ -257,6 +257,24 @@ export const createSummary: RequestHandler = async (req, res) => {
   console.log("Updating access token...");
   updateToken(authObject.locationId);
   console.log("Finished updating access token!");
+
+  // Getting the new auth object
+  console.log("Retrieving new auth object...");
+  authObject = await OAuthToken.findOne({
+    locationId: req.body.locationId,
+  })
+    .sort({ createdAt: -1 })
+    .limit(1);
+  console.log("Got new auth object!");
+
+  // Check if auth object exists again
+  if (!authObject) {
+    res.status(400).send("No auth object found!");
+    console.log("No auth object found!");
+    return;
+  } else {
+    console.log("Found auth object!");
+  }
 
   // Setting varaibles for easy access
   const access_token = authObject.accessToken;
