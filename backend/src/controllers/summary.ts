@@ -395,15 +395,31 @@ export const createSummary: RequestHandler = async (req, res) => {
           }
         }
 
-        // Combine all the messages into one string
+        // Combine all the messages into one string and retrive context
         const messages_string = messages.join("; ");
+        const clientContext =
+          (contact as { clientContext?: string } | null)?.clientContext ?? null;
 
         // Summary prompting
         const completion = await openai.chat.completions.create({
           messages: [
             {
               role: "user",
-              content: `Summarize the following messages that are separated by a semicolon. Prioritize the first 5 messages to be part of the summary, and if there is additional context, please include it from the last 15. As context, these messages are retrieved from a client-facing messaging service. Therefore, you should not just create a generic summary. Give me a quick summary of the whole conversation, an bulleted list of upcoming meetings, and a second bulleted list of action items that need to be taken. If any of these are not relevant to the conversation, do not include them. Also, I am giving you the current date - use this as your point of reference for anything time-based : ${messages_string}, ${Date.now()}`,
+              content: `Summarize the following semicolon-separated messages from a client-facing messaging service. Prioritize the first 5 messages for the overall summary, but also incorporate any relevant additional context from the last 15 messages.
+
+              Your response should include:
+              1. **A concise summary** of the full conversation (with an emphasis on the first 5 messages).
+              2. **A bulleted list of any upcoming meetings**, including date, time, and purpose (if mentioned).
+              3. **A bulleted list of action items**, such as tasks to be completed, follow-ups, or decisions made.
+
+              ⚠️ Only include sections (2) or (3) if they are explicitly mentioned or implied in the conversation. Do not fabricate or generalize.
+
+              Use the following date as your point of reference for interpreting any time-based information: ${new Date(
+                Date.now()
+              ).toISOString()}.
+
+              Messages:
+              ${messages_string}`,
             },
           ],
           model: "gpt-4o-mini",
@@ -414,7 +430,26 @@ export const createSummary: RequestHandler = async (req, res) => {
           messages: [
             {
               role: "user",
-              content: `Determine if there is any important context about the client from any of these messages. Examples include the client having children, or being away the next week, etc. Summarize all this information into one string, making sure not to dilute anything. ONLY return this context. If there is no key information, return the EXACT STRING "None". Also, I am giving you the current date - use this as your point of reference for anything time-based :  ${messages_string}, ${Date.now()}`,
+              content: `Review the following semicolon-separated messages to extract **important client-specific context**. This includes both:
+              - **New context** (e.g., the client is traveling, busy with a family matter, out of office, has children, etc.)
+              - **Updates to prior context** (e.g., the client is now available, has returned from a trip, completed a task, or changed availability).
+
+              You are NOT summarizing the conversation. Only extract **relevant information about the client's current situation, schedule, or needs**. Ignore generic content or casual small talk.
+
+              Your output should be:
+              - A single, concise sentence (or short paragraph) summarizing the **current** state of the client.
+              - You MUST update or override outdated context if the messages indicate a change (e.g., “back from vacation” should replace “on vacation”).
+
+              Use the following as:
+              - The **previous known context** (if any): ${clientContext}
+              - The **current date** to determine what is past, present, or future: ${new Date(
+                Date.now()
+              ).toISOString()}
+
+              If no relevant client-specific context is present, return the **exact string**: "None"
+
+              Messages:
+              ${messages_string}`,
             },
           ],
           model: "gpt-4o-mini",
@@ -482,14 +517,31 @@ export const createSummary: RequestHandler = async (req, res) => {
         timestamps.push(req.body.timestamp);
         console.log("Finished updating arrays!");
 
+        // Combine into a string and get context
         const messagesString = messageBodies.join("; ");
+        const clientContext =
+          (contact as { clientContext?: string } | null)?.clientContext ?? null;
 
         // Define the OpenAI models
         const completion = await openai.chat.completions.create({
           messages: [
             {
               role: "user",
-              content: `Summarize the following messages that are separated by a semicolon. Prioritize the first 5 messages to be part of the summary, and if there is additional context, please include it from the last 15. As context, these messages are retrieved from a client-facing messaging service. Therefore, you should not just create a generic summary. Give me a quick summary of the whole conversation, an bulleted list of upcoming meetings, and a second bulleted list of action items that need to be taken. If any of these are not relevant to the conversation, do not include them. Also, I am giving you the current date - use this as your point of reference for anything time-based : ${messagesString}, ${Date.now()}`,
+              content: `Summarize the following semicolon-separated messages from a client-facing messaging service. Prioritize the first 5 messages for the overall summary, but also incorporate any relevant additional context from the last 15 messages.
+
+              Your response should include:
+              1. **A concise summary** of the full conversation (with an emphasis on the first 5 messages).
+              2. **A bulleted list of any upcoming meetings**, including date, time, and purpose (if mentioned).
+              3. **A bulleted list of action items**, such as tasks to be completed, follow-ups, or decisions made.
+
+              ⚠️ Only include sections (2) or (3) if they are explicitly mentioned or implied in the conversation. Do not fabricate or generalize.
+
+              Use the following date as your point of reference for interpreting any time-based information: ${new Date(
+                Date.now()
+              ).toISOString()}.
+
+              Messages:
+              ${messagesString}`,
             },
           ],
           model: "gpt-4o-mini",
@@ -499,7 +551,26 @@ export const createSummary: RequestHandler = async (req, res) => {
           messages: [
             {
               role: "user",
-              content: `Determine if there is any important context about the client from any of the incoming message, signified by being before the set of double semicolons in your prompt ";; ". Examples include the client having children, or being away the next week, etc. If there is add it to the client context summary in the second part of your prompt (after the set of double semicolons). Return a new summary with the new information. ONLY return the summary. If there is no key information, return the EXACT STRING "None". Also, I am giving you the current date - use this as your point of reference for anything time-based. Note that this time logic should be used to update past context as well. If the past context is time sensitive and the current date invalidates that, also return "None" :  ${messagesString}, ${Date.now()}`,
+              content: `Review the following semicolon-separated messages to extract **important client-specific context**. This includes both:
+              - **New context** (e.g., the client is traveling, busy with a family matter, out of office, has children, etc.)
+              - **Updates to prior context** (e.g., the client is now available, has returned from a trip, completed a task, or changed availability).
+
+              You are NOT summarizing the conversation. Only extract **relevant information about the client's current situation, schedule, or needs**. Ignore generic content or casual small talk.
+
+              Your output should be:
+              - A single, concise sentence (or short paragraph) summarizing the **current** state of the client.
+              - You MUST update or override outdated context if the messages indicate a change (e.g., “back from vacation” should replace “on vacation”).
+
+              Use the following as:
+              - The **previous known context** (if any): ${clientContext}
+              - The **current date** to determine what is past, present, or future: ${new Date(
+                Date.now()
+              ).toISOString()}
+
+              If no relevant client-specific context is present, return the **exact string**: "None"
+
+              Messages:
+              ${messagesString}`,
             },
           ],
           model: "gpt-4o-mini",
