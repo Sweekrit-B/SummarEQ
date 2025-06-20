@@ -9,6 +9,7 @@ import * as dotenv from "dotenv";
 import axios from "axios";
 import Bottleneck from "bottleneck";
 import qs from "qs";
+import { access } from "fs";
 
 dotenv.config();
 
@@ -21,6 +22,122 @@ if (!process.env.OPEN_API_KEY) {
 const openai = new OpenAI({
   apiKey: process.env.OPEN_API_KEY,
 });
+
+// Summary prompting
+const summarizeConversation = async (messages_string: string) => {
+  const completion = await openai.chat.completions.create({
+    messages: [
+      {
+        role: "system",
+        content: `You are a helpful summarization assistant meant for a client-facing CRM based messaging service. Based on a provided input, you will summarize the conversation, extract important context, and identify any action items or meetings. Prioritize the first 5 messages for the overall summary, but also incorporate any relevant additional context from the last 15 messages.
+
+              Your response should include:
+              1. **A concise summary** of the full conversation (with an emphasis on the first 5 messages).
+              2. **A bulleted list of any upcoming meetings**, including date, time, and purpose (if mentioned).
+              3. **A bulleted list of action items**, such as tasks to be completed, follow-ups, or decisions made.
+
+              ⚠️ Only include sections (2) or (3) if they are explicitly mentioned or implied in the conversation. Do not fabricate or generalize.
+
+              Use the following date as your point of reference for interpreting any time-based information: ${new Date(
+                Date.now()
+              ).toISOString()}.`,
+      },
+      { role: "user", content: messages_string },
+    ],
+    model: "gpt-4o-mini",
+  });
+
+  // Run the OpenAI summarization
+  console.log("Running summarization logic...");
+  let summaryText = completion.choices[0].message.content;
+  console.log("Finished summarizing!: " + summaryText);
+
+  return summaryText;
+};
+
+const determineContext = async (
+  messages_string: string,
+  previousContext?: string
+) => {
+  // Context prompting
+  if (
+    previousContext !== "" &&
+    previousContext !== undefined &&
+    previousContext !== null
+  ) {
+    const contextDetermination = await openai.chat.completions.create({
+      messages: [
+        {
+          role: "system",
+          content: `Review the following semicolon-separated messages to extract **important client-specific context**. This includes both:
+              - **New context** (e.g., the client is traveling, busy with a family matter, out of office, has children, etc.)
+              - **Updates to prior context** (e.g., the client is now available, has returned from a trip, completed a task, or changed availability).
+
+              You are NOT summarizing the conversation. Only extract **relevant information about the client's current situation, schedule, or needs**. Ignore generic content or casual small talk.
+
+              Your output should be:
+              - A single, concise sentence (or short paragraph) summarizing the **current** state of the client.
+              - You MUST update or override outdated context if the messages indicate a change (e.g., if the current date reveals that the cleint should be back from vacation, remove that part from the context).
+
+              Use the following date as your point of reference for interpreting any time-based information: ${new Date(
+                Date.now()
+              ).toISOString()}.
+              
+              If no relevant client-specific context is present, return the **exact string**: "None"`,
+        },
+        { role: "user", content: messages_string },
+      ],
+      model: "gpt-4o-mini",
+    });
+
+    console.log("Running context logic...");
+    let contextText = contextDetermination.choices[0].message.content;
+    console.log("Finished contexting!: " + contextText);
+
+    // Filter our irrelevant context text.
+    if (contextText === "None") {
+      contextText = "There is no user context as of now.";
+    }
+
+    return contextText;
+  } else {
+    const contextDetermination = await openai.chat.completions.create({
+      messages: [
+        {
+          role: "system",
+          content: `Review the following semicolon-separated messages to extract **important client-specific context**. This includes both:
+              - **New context** (e.g., the client is traveling, busy with a family matter, out of office, has children, etc.)
+              - **Updates to prior context** (e.g., the client is now available, has returned from a trip, completed a task, or changed availability).
+
+              You are NOT summarizing the conversation. Only extract **relevant information about the client's current situation, schedule, or needs**. Ignore generic content or casual small talk.
+
+              Your output should be:
+              - A single, concise sentence (or short paragraph) summarizing the **current** state of the client.
+              - You MUST update or override outdated context if the messages indicate a change (e.g., if the current date reveals that the cleint should be back from vacation, remove that part from the context).
+
+              Use the following date as your point of reference for interpreting any time-based information: ${new Date(
+                Date.now()
+              ).toISOString()}. Also use the following context as a reference: ${previousContext}.
+              
+              If no relevant client-specific context is present, return the **exact string**: "None"`,
+        },
+        { role: "user", content: messages_string },
+      ],
+      model: "gpt-4o-mini",
+    });
+
+    console.log("Running context logic...");
+    let contextText = contextDetermination.choices[0].message.content;
+    console.log("Finished contexting!: " + contextText);
+
+    // Filter our irrelevant context text.
+    if (contextText === "None") {
+      contextText = "There is no user context as of now.";
+    }
+
+    return contextText;
+  }
+};
 
 //Create rate limiter
 const limiter = new Bottleneck({
@@ -115,9 +232,56 @@ const getNotes = async (access_token: string, contactId?: string) => {
   // Retrieve the response
   console.log("Getting notes...");
   const response = await axios.get(notes_url, { headers: headers });
-  console.log("Notes response: ", response.data);
+  console.log("Got notes successfully!");
 
   return response.data;
+};
+
+const createNewNote = async (
+  access_token: string,
+  notes_data: any,
+  summary: string,
+  contactId?: string
+) => {
+  console.log("Did not find any notes about the user...");
+
+  // Set the update URL, headers, and body
+  const create_url = `https://services.leadconnectorhq.com/contacts/${contactId}/notes`;
+  const headers = {
+    Authorization: "Bearer " + access_token,
+    Version: "2021-07-28",
+  };
+  const data = {
+    body: summary,
+  };
+
+  console.log("Updating contact...");
+  const response = await axios.post(create_url, data, { headers: headers });
+  console.log("Create contact note response: ", response.data);
+};
+
+const updateExistingNote = async (
+  access_token: string,
+  notes_data: any,
+  summary: string,
+  note_id: string,
+  contactId?: string
+) => {
+  // Set an update URL, headers, and body
+  const update_url = `https://services.leadconnectorhq.com/contacts/${contactId}/notes/${note_id}`;
+  const headers = {
+    Authorization: "Bearer " + access_token,
+    Version: "2021-07-28",
+  };
+  const body = {
+    body: summary,
+  };
+
+  console.log("Updating contact...");
+  const response = await axios.put(update_url, body, {
+    headers: headers,
+  });
+  console.log("Contact updated successfully: ", response.data);
 };
 
 //Create and update the contact notes
@@ -125,48 +289,42 @@ const createUpdateContact = async (
   access_token: string,
   notes_data: any,
   summary: string,
-  contactId?: string
+  contactId: string
 ) => {
   console.log("Inside createUpdateContact...");
+  console.log("Contact ID: ", contactId);
 
   // Check if there are already notes about this user
   if (notes_data.notes.length > 0) {
     console.log("Found notes about the user...");
 
-    // Retrieve the first note in the list
-    const note_id = notes_data.notes[0].id;
+    // Find the index of the node that starts with "Summary" and update it
+    const index_ofSummary = notes_data.notes.findIndex(
+      (note: any) =>
+        note.body.substring(0, 4 + contactId.length) === "ID: " + contactId
+    );
+    console.log("Index of summary note: ", index_ofSummary);
+    const note_id = notes_data.notes[index_ofSummary].id;
 
-    // Set an update URL, headers, and body
-    const update_url = `https://services.leadconnectorhq.com/contacts/${contactId}/notes/${note_id}`;
-    const headers = {
-      Authorization: "Bearer " + access_token,
-      Version: "2021-07-28",
-    };
-    const body = {
-      body: summary,
-    };
-
-    console.log("Updating contact...");
-    const response = await axios.put(update_url, body, {
-      headers: headers,
-    });
-    console.log("Contact updated successfully: ", response.data);
+    // If the index is -1, it means that there is no summary note
+    if (index_ofSummary === -1) {
+      await createNewNote(access_token, notes_data, summary, contactId);
+      console.log("No summary note found, created a new note for the user!");
+    } else {
+      console.log("Found summary note, updating it...");
+      await updateExistingNote(
+        access_token,
+        notes_data,
+        summary,
+        note_id,
+        contactId
+      );
+      console.log("Updated existing note for the user!");
+    }
   } else {
     console.log("Did not find any notes about the user...");
-
-    // Set the update URL, headers, and body
-    const create_url = `https://services.leadconnectorhq.com/contacts/${contactId}/notes`;
-    const headers = {
-      Authorization: "Bearer " + access_token,
-      Version: "2021-07-28",
-    };
-    const data = {
-      body: summary,
-    };
-
-    console.log("Updating contact...");
-    const response = await axios.post(create_url, data, { headers: headers });
-    console.log("Create contact note response: ", response.data);
+    await createNewNote(access_token, notes_data, summary, contactId);
+    console.log("Created a new note for the user!");
   }
   console.log("Finished creating/updating contact");
   console.log("---");
@@ -190,14 +348,21 @@ const sendPostRequest = async (
   const search = await getNotes(access_token, contactId);
   console.log("Finished searching for contacts!");
 
-  // Update thecontact
+  // Update the contact
   console.log("Updating contact...");
+
+  // check if contactId is defined
+  if (!contactId) {
+    throw new Error("contactId is required but was undefined");
+  }
+
   const createUpdate = await createUpdateContact(
     access_token,
     search,
     summary,
     contactId
   );
+
   console.log("Finished updating contacts!");
 
   const axiosDuration = Date.now() - axiosStartTime;
@@ -224,7 +389,8 @@ export const createSummary: RequestHandler = async (req, res) => {
   if (
     req.body.type !== "verification" &&
     req.body.type !== "INSTALL" &&
-    req.body.type !== "InboundMessage"
+    req.body.type !== "InboundMessage" &&
+    req.body.type !== "OutboundMessage"
   ) {
     console.log("Invalid message event received:", req.body);
     res.status(400).send("Invalid message event");
@@ -276,7 +442,7 @@ export const createSummary: RequestHandler = async (req, res) => {
     console.log("Found auth object!");
   }
 
-  // Setting varaibles for easy access
+  // Setting variables for easy access
   const access_token = authObject.accessToken;
   const location_id = authObject.locationId;
   const contact_id = req.body.contactId;
@@ -386,8 +552,9 @@ export const createSummary: RequestHandler = async (req, res) => {
               messageTypes.push(message.messageType);
             }
             const body = message.body;
+            const direction = message.direction;
             const timestamp = message.timestamp;
-            messages.push(body);
+            messages.push(direction + ": " + body);
             timestamps.push(timestamp);
           } catch (error) {
             console.error("Error fetching message body: ", error);
@@ -396,77 +563,30 @@ export const createSummary: RequestHandler = async (req, res) => {
         }
 
         // Combine all the messages into one string and retrive context
-        const messages_string = messages.join("; ");
+        const messages_string = messages.join("\n ");
         const clientContext =
-          (contact as { clientContext?: string } | null)?.clientContext ?? null;
+          (contact as { clientContext?: string } | null)?.clientContext ?? "";
 
-        // Summary prompting
-        const completion = await openai.chat.completions.create({
-          messages: [
-            {
-              role: "user",
-              content: `Summarize the following semicolon-separated messages from a client-facing messaging service. Prioritize the first 5 messages for the overall summary, but also incorporate any relevant additional context from the last 15 messages.
-
-              Your response should include:
-              1. **A concise summary** of the full conversation (with an emphasis on the first 5 messages).
-              2. **A bulleted list of any upcoming meetings**, including date, time, and purpose (if mentioned).
-              3. **A bulleted list of action items**, such as tasks to be completed, follow-ups, or decisions made.
-
-              ⚠️ Only include sections (2) or (3) if they are explicitly mentioned or implied in the conversation. Do not fabricate or generalize.
-
-              Use the following date as your point of reference for interpreting any time-based information: ${new Date(
-                Date.now()
-              ).toISOString()}.
-
-              Messages:
-              ${messages_string}`,
-            },
-          ],
-          model: "gpt-4o-mini",
-        });
-
-        // Context prompting
-        const contextDetermination = await openai.chat.completions.create({
-          messages: [
-            {
-              role: "user",
-              content: `Review the following semicolon-separated messages to extract **important client-specific context**. This includes both:
-              - **New context** (e.g., the client is traveling, busy with a family matter, out of office, has children, etc.)
-              - **Updates to prior context** (e.g., the client is now available, has returned from a trip, completed a task, or changed availability).
-
-              You are NOT summarizing the conversation. Only extract **relevant information about the client's current situation, schedule, or needs**. Ignore generic content or casual small talk.
-
-              Your output should be:
-              - A single, concise sentence (or short paragraph) summarizing the **current** state of the client.
-              - You MUST update or override outdated context if the messages indicate a change (e.g., “back from vacation” should replace “on vacation”).
-
-              Use the following as:
-              - The **previous known context** (if any): ${clientContext}
-              - The **current date** to determine what is past, present, or future: ${new Date(
-                Date.now()
-              ).toISOString()}
-
-              If no relevant client-specific context is present, return the **exact string**: "None"
-
-              Messages:
-              ${messages_string}`,
-            },
-          ],
-          model: "gpt-4o-mini",
-        });
-
-        // Run the OpenAI prompts
-        console.log("Running prompt logic...");
-        let summaryText = completion.choices[0].message.content;
-        let contextText = contextDetermination.choices[0].message.content;
-        console.log("Finished prompting!");
-
-        // Filter our irrelevant context text.
-        if (contextText === "None") {
-          contextText = "There is no user context as of now.";
+        // Define the OpenAI models
+        console.log("Running OpenAI models...");
+        let summaryText = "";
+        let contextText = "";
+        try {
+          summaryText = (await summarizeConversation(messages_string)) ?? "";
+        } catch (err) {
+          console.error("Error in summarizeConversation:", err);
         }
+        try {
+          contextText =
+            (await determineContext(messages_string, clientContext)) ?? "";
+        } catch (err) {
+          console.error("Error in determineContext:", err);
+        }
+        console.log("Outside function summary text: ", summaryText);
+        console.log("Outside function context text: ", contextText);
+        console.log("Finished running OpenAI models!");
 
-        // Creat a contact object
+        // Create a contact object
         console.log("Creating summary/contact object...");
         const summary = await SummaryModel.create({
           firstName: contact_data.contact.firstName,
@@ -487,7 +607,12 @@ export const createSummary: RequestHandler = async (req, res) => {
         console.log("Sending post request...");
         const axiosDuration = await sendPostRequest(
           access_token,
-          summaryText + "\n\n" + contextText,
+          "ID: " +
+            contactId +
+            "\n\nSummary: \n" +
+            summaryText +
+            "\n\nContext: \n" +
+            contextText,
           location_id,
           contact_id
         );
@@ -518,74 +643,28 @@ export const createSummary: RequestHandler = async (req, res) => {
         console.log("Finished updating arrays!");
 
         // Combine into a string and get context
-        const messagesString = messageBodies.join("; ");
+        const messages_string = messageBodies.join("; ");
         const clientContext =
-          (contact as { clientContext?: string } | null)?.clientContext ?? null;
+          (contact as { clientContext?: string } | null)?.clientContext ?? "";
 
         // Define the OpenAI models
-        const completion = await openai.chat.completions.create({
-          messages: [
-            {
-              role: "user",
-              content: `Summarize the following semicolon-separated messages from a client-facing messaging service. Prioritize the first 5 messages for the overall summary, but also incorporate any relevant additional context from the last 15 messages.
-
-              Your response should include:
-              1. **A concise summary** of the full conversation (with an emphasis on the first 5 messages).
-              2. **A bulleted list of any upcoming meetings**, including date, time, and purpose (if mentioned).
-              3. **A bulleted list of action items**, such as tasks to be completed, follow-ups, or decisions made.
-
-              ⚠️ Only include sections (2) or (3) if they are explicitly mentioned or implied in the conversation. Do not fabricate or generalize.
-
-              Use the following date as your point of reference for interpreting any time-based information: ${new Date(
-                Date.now()
-              ).toISOString()}.
-
-              Messages:
-              ${messagesString}`,
-            },
-          ],
-          model: "gpt-4o-mini",
-        });
-
-        const contextDetermination = await openai.chat.completions.create({
-          messages: [
-            {
-              role: "user",
-              content: `Review the following semicolon-separated messages to extract **important client-specific context**. This includes both:
-              - **New context** (e.g., the client is traveling, busy with a family matter, out of office, has children, etc.)
-              - **Updates to prior context** (e.g., the client is now available, has returned from a trip, completed a task, or changed availability).
-
-              You are NOT summarizing the conversation. Only extract **relevant information about the client's current situation, schedule, or needs**. Ignore generic content or casual small talk.
-
-              Your output should be:
-              - A single, concise sentence (or short paragraph) summarizing the **current** state of the client.
-              - You MUST update or override outdated context if the messages indicate a change (e.g., “back from vacation” should replace “on vacation”).
-
-              Use the following as:
-              - The **previous known context** (if any): ${clientContext}
-              - The **current date** to determine what is past, present, or future: ${new Date(
-                Date.now()
-              ).toISOString()}
-
-              If no relevant client-specific context is present, return the **exact string**: "None"
-
-              Messages:
-              ${messagesString}`,
-            },
-          ],
-          model: "gpt-4o-mini",
-        });
-
-        // Running the prompt logic
-        console.log("Running prompt logic...");
-        let summaryText = completion.choices[0].message.content;
-        let contextText = contextDetermination.choices[0].message.content;
-        console.log("Finished prompting!");
-
-        // User context logic
-        if (contextText === "None") {
-          contextText = "There is no user context as of now.";
+        console.log("Running OpenAI models...");
+        let summaryText = "";
+        let contextText = "";
+        try {
+          summaryText = (await summarizeConversation(messages_string)) ?? "";
+        } catch (err) {
+          console.error("Error in summarizeConversation:", err);
         }
+        try {
+          contextText =
+            (await determineContext(messages_string, clientContext)) ?? "";
+        } catch (err) {
+          console.error("Error in determineContext:", err);
+        }
+        console.log("Outside function summary text: ", summaryText);
+        console.log("Outside function context text: ", contextText);
+        console.log("Finished running OpenAI models!");
 
         // Updating the user object
         console.log("Updating the user/contact object...");
@@ -605,7 +684,12 @@ export const createSummary: RequestHandler = async (req, res) => {
         console.log("Sending the post request...");
         const axiosDuration = await sendPostRequest(
           access_token,
-          summaryText + "\n\n" + contextText,
+          "ID: " +
+            contactId +
+            "\n\nSummary: \n" +
+            summaryText +
+            "\n\nContext: \n" +
+            contextText,
           location_id,
           contact_id
         );
